@@ -1,0 +1,91 @@
+# 智慧考试系统 - 本地开发依赖环境
+# 与 application.yml / application-dev.yml 配置保持一致:
+#   MySQL : localhost:3306  root/123456  数据库 aiexam (首次启动自动导入 db/aiexam.sql)
+#   Redis : localhost:6379  无密码
+#   MinIO : localhost:9000  minioadmin/minioadmin  bucket: exam-bucket (自动创建)
+# 启动: docker compose up -d
+# 停止: docker compose down          (保留数据)
+# 清空: docker compose down -v       (删除数据卷, 慎用)
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: exam-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_DATABASE: aiexam
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 首次初始化时自动执行建表脚本 (仅在数据卷为空时执行一次)
+      - ./db/aiexam.sql:/docker-entrypoint-initdb.d/aiexam.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p123456"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: exam-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    # MinIO 官方已于 2026-09 删除 Docker Hub 上的 minio/minio 与 minio/mc 仓库,
+    # 改用社区维护的 MinIO fork: pgsty/silo (Pigsty 维护, S3 API 完全兼容, 保留 Web 控制台)
+    image: pgsty/silo:latest
+    container_name: exam-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API, 对应 minio.endpoint
+      - "9001:9001"   # Web 控制台 http://localhost:9001
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # 一次性任务: 等待 MinIO 就绪后自动创建 exam-bucket 并开放匿名只读
+  # (轮播图等图片 URL 需要能被浏览器直接访问)
+  minio-init:
+    image: pgsty/mc:latest
+    container_name: exam-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/exam-bucket;
+      mc anonymous set download local/exam-bucket;
+      echo 'MinIO bucket exam-bucket 初始化完成';
+      "
+    restart: "no"
+
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:

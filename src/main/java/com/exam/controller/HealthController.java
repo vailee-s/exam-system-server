@@ -39,7 +39,7 @@ public class HealthController {
     public Result<Map<String, String>> generateTokenDemo(
             @Parameter(description = "用户ID") @RequestParam(defaultValue = "1") Long userId,
             @Parameter(description = "用户名") @RequestParam(defaultValue = "admin") String username) {
-        String token = JwtUtil.createToken(userId, username);
+        String token = JwtUtil.createToken(userId, username, "admin");
         Map<String, String> data = new HashMap<>();
         data.put("token", token);
         data.put("userId", String.valueOf(userId));

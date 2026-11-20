@@ -1,146 +1,83 @@
 package com.exam.util;
 
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.ExpiredJwtException;
-import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.util.StringUtils;
 
 import javax.crypto.SecretKey;
-import java.nio.charset.StandardCharsets;
+
+import com.exam.common.result.ResultCodeEnum;
+import com.exam.exception.MyException;
+
 import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * JWT 工具类 (基于 JJWT 0.12.5)
  *
  * @author exam
  */
-@Slf4j
 public class JwtUtil {
+    // 密钥长度必须是32位，否则会抛出异常
+    private static SecretKey secretKey = Keys.hmacShaKeyFor("AX6yUVsWuUsu6SXGfa8cbEkaNaFFFfXD".getBytes());
 
     /**
-     * Token 默认过期时间: 24 小时 (毫秒)
+     * 生成token
      */
-    public static final long DEFAULT_EXPIRE_TIME = 24 * 60 * 60 * 1000L;
-
-    /**
-     * 签名密钥 (长度需不少于 32 字节 / 256 位)
-     */
-    private static final String DEFAULT_SECRET = "my-exam-sys-jwt-secret-key-must-be-long-enough-32bytes";
-    private static final SecretKey SECRET_KEY = Keys.hmacShaKeyFor(DEFAULT_SECRET.getBytes(StandardCharsets.UTF_8));
-
-    /**
-     * 根据用户 ID 与用户名生成 Token
-     *
-     * @param userId   用户 ID
-     * @param username 用户名
-     * @return Token 字符串
-     */
-    public static String createToken(Long userId, String username) {
-        return createToken(userId, username, DEFAULT_EXPIRE_TIME);
-    }
-
-    /**
-     * 生成自定义有效期的 Token
-     *
-     * @param userId     用户 ID
-     * @param username   用户名
-     * @param expireTime 有效期 (毫秒)
-     * @return Token 字符串
-     */
-    public static String createToken(Long userId, String username, long expireTime) {
-        Map<String, Object> claims = new HashMap<>();
-        claims.put("userId", userId);
-        claims.put("username", username);
-
-        return Jwts.builder()
-                .claims(claims)
-                .subject(String.valueOf(userId))
-                .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + expireTime))
-                .signWith(SECRET_KEY)
+    public static String createToken(Long userId, String username, String role) {
+        String token = Jwts.builder()
+                .setExpiration(new Date(System.currentTimeMillis() + 1000 * 60 * 60 * 24L))
+                .setSubject("LONIN_USER")
+                .claim("userId", userId)
+                .claim("username", username)
+                .claim("role", role)
+                // 0.12.x 改动：不再使用 SignatureAlgorithm 枚举，直接传入 secretKey 即可，内部会自动选择 HS256
+                .signWith(secretKey)
                 .compact();
+        return token;
     }
 
     /**
-     * 解析 Token 获取载荷 Claims
-     *
-     * @param token Token 字符串
-     * @return Claims 对象，若解析失败或过期返回 null
+     * 解析token
      */
     public static Claims parseToken(String token) {
-        if (!StringUtils.hasText(token)) {
-            return null;
+        if (token == null) {
+            throw new MyException(ResultCodeEnum.UNAUTHORIZED);
         }
         try {
-            return Jwts.parser()
-                    .verifyWith(SECRET_KEY)
-                    .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
+            // 0.12.x 改动 1：parserBuilder() 改成了 parser()
+            // 0.12.x 改动 2：setSigningKey() 改成了 verifyWith()
+            JwtParser jwtParser = Jwts.parser()
+                    .verifyWith(secretKey)
+                    .build();
+
+            // 0.12.x 改动 3：parseClaimsJws() 改成了 parseSignedClaims()
+            Jws<Claims> claimsJws = jwtParser.parseSignedClaims(token);
+
+            // 0.12.x 改动 4：getBody() 改成了 getPayload()
+            Claims claims = claimsJws.getPayload();
+            return claims;
+
         } catch (ExpiredJwtException e) {
-            log.warn("JWT 已经过期: {}", e.getMessage());
-            throw e;
-        } catch (Exception e) {
-            log.error("JWT 解析异常: {}", e.getMessage());
-            return null;
+            throw new MyException(ResultCodeEnum.TOKEN_EXPIRED);
+        } catch (JwtException e) {
+            throw new MyException(ResultCodeEnum.TOKEN_INVALID);
         }
     }
 
     /**
-     * 从 Token 中获取用户 ID
-     *
-     * @param token Token 字符串
-     * @return 用户 ID
+     * 获取 token 剩余有效期（毫秒）
      */
-    public static Long getUserId(String token) {
+    public static long getRemainingTime(String token) {
         try {
             Claims claims = parseToken(token);
-            if (claims != null && claims.get("userId") != null) {
-                return Long.valueOf(claims.get("userId").toString());
-            }
+            Date expiration = claims.getExpiration();
+            long remain = expiration.getTime() - System.currentTimeMillis();
+            return Math.max(remain, 0);
         } catch (Exception e) {
-            log.warn("从 Token 获取用户 ID 失败: {}", e.getMessage());
+            return 0;
         }
-        return null;
     }
 
-    /**
-     * 从 Token 中获取用户名
-     *
-     * @param token Token 字符串
-     * @return 用户名
-     */
-    public static String getUsername(String token) {
-        try {
-            Claims claims = parseToken(token);
-            if (claims != null && claims.get("username") != null) {
-                return claims.get("username").toString();
-            }
-        } catch (Exception e) {
-            log.warn("从 Token 获取用户名失败: {}", e.getMessage());
-        }
-        return null;
-    }
-
-    /**
-     * 校验 Token 是否有效 (未过期且合法)
-     *
-     * @param token Token 字符串
-     * @return 是否有效
-     */
-    public static boolean validateToken(String token) {
-        if (!StringUtils.hasText(token)) {
-            return false;
-        }
-        try {
-            Claims claims = parseToken(token);
-            return claims != null && claims.getExpiration().after(new Date());
-        } catch (Exception e) {
-            return false;
-        }
+    public static void main(String[] args) {
+        System.out.println(createToken(1L, "admin", "admin"));
     }
 }
